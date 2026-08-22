@@ -8,7 +8,7 @@ import {
 } from '../services/connection.service.js'
 export const connectionRouter = Router()
 
-connectionRouter.use(requireSession)
+connectionRouter.use(requireSession);
 
 connectionRouter.get("/", async (req, res) => {
     try {

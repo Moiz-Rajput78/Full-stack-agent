@@ -5,6 +5,7 @@ import { getPool } from "./db/pool.js";
 import { success } from 'zod';
 import { log } from 'node:console';
 import {connectionRouter} from './routes/connection.routes.js'
+import { agentRoutes } from './routes/agent.routes.js'
 
 
 const app = express();
@@ -35,6 +36,7 @@ app.get("/health", async(_req, res)=> {
 });
 
 app.use("/api/connections", connectionRouter);
+app.use("/api/agent", agentRoutes)
 
 app.listen(port, ()=> {
     console.log(`Agentic Calendar App is Running on port: ${port}`);

@@ -12,9 +12,13 @@
   "type": "module",
   "dependencies": {
     "@descope/node-sdk": "^2.14.0",
+    "@mastra/core": "^1.61.0",
+    "@mastra/libsql": "^1.21.1",
+    "@mastra/memory": "^1.27.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "googleapis": "^176.0.0",
     "pg": "^8.23.0",
     "zod": "^4.4.3"
   },
