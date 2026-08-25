@@ -5,6 +5,12 @@ import {
   getCalendarAccessToken,
 } from "./token.service.js";
 
+/**
+ * ============================================================
+ * GOOGLE CALENDAR CLIENT
+ * ============================================================
+ */
+
 function calendarClient(
   accessToken: string,
 ) {
@@ -34,10 +40,19 @@ async function calendarForUser(
   );
 }
 
+/**
+ * ============================================================
+ * EVENT FORMATTER
+ * ============================================================
+ */
+
 function formatEvent(event: {
   id?: string | null;
+
   summary?: string | null;
+
   description?: string | null;
+
   location?: string | null;
 
   start?: {
@@ -51,16 +66,51 @@ function formatEvent(event: {
   } | null;
 
   htmlLink?: string | null;
+
   hangoutLink?: string | null;
+
+  conferenceData?: {
+    entryPoints?: Array<{
+      entryPointType?: string | null;
+      uri?: string | null;
+    }> | null;
+  } | null;
 
   attendees?: Array<{
     email?: string | null;
     displayName?: string | null;
   }> | null;
 }) {
+  /**
+   * Google Meet link can exist either in
+   * hangoutLink or conferenceData.entryPoints.
+   */
+  let meetLink =
+    event.hangoutLink ??
+    null;
+
+  if (!meetLink) {
+    const videoEntry =
+      (
+        event.conferenceData
+          ?.entryPoints ?? []
+      ).find(
+        (entry) =>
+          entry.entryPointType ===
+            "video" &&
+          typeof entry.uri ===
+            "string",
+      );
+
+    meetLink =
+      videoEntry?.uri ??
+      null;
+  }
+
   return {
     id:
-      event.id ?? null,
+      event.id ??
+      null,
 
     title:
       event.summary?.trim() ||
@@ -88,12 +138,12 @@ function formatEvent(event: {
       event.htmlLink ??
       null,
 
-    meetLink:
-      event.hangoutLink ??
-      null,
+    meetLink,
 
     attendees:
-      (event.attendees ?? [])
+      (
+        event.attendees ?? []
+      )
         .map(
           (person) =>
             person.email ||
@@ -109,13 +159,74 @@ function formatEvent(event: {
 }
 
 /**
- * List upcoming events.
+ * ============================================================
+ * LOCAL DAY RANGE
+ * ============================================================
+ *
+ * Used for:
+ * - today
+ * - tomorrow
  */
+
+function getLocalDayRange(
+  offsetDays = 0,
+) {
+  const start =
+    new Date();
+
+  start.setHours(
+    0,
+    0,
+    0,
+    0,
+  );
+
+  start.setDate(
+    start.getDate() +
+      offsetDays,
+  );
+
+  const end =
+    new Date(start);
+
+  end.setDate(
+    end.getDate() + 1,
+  );
+
+  return {
+    timeMin:
+      start.toISOString(),
+
+    timeMax:
+      end.toISOString(),
+  };
+}
+
+/**
+ * ============================================================
+ * LIST UPCOMING MEETINGS
+ * ============================================================
+ *
+ * Used for:
+ * - today's meetings
+ * - tomorrow's meetings
+ * - upcoming meetings
+ *
+ * IMPORTANT:
+ * This function is NOT intended for historical searches.
+ *
+ * For past events use searchCalendarEvents().
+ */
+
 export async function listUpcomingMeetings(
   input: {
     authUserId: string;
+
     maxResults?: number;
+
     todayOnly?: boolean;
+
+    tomorrowOnly?: boolean;
   },
 ) {
   const calendar =
@@ -123,46 +234,56 @@ export async function listUpcomingMeetings(
       input.authUserId,
     );
 
-  const now = new Date();
-
-  let timeMin =
-    now.toISOString();
+  let timeMin: string;
 
   let timeMax:
     | string
     | undefined;
 
-  if (input.todayOnly) {
-    const start =
-      new Date(now);
-
-    start.setHours(
-      0,
-      0,
-      0,
-      0,
-    );
-
-    const end =
-      new Date(now);
-
-    end.setHours(
-      23,
-      59,
-      59,
-      999,
-    );
+  /**
+   * Tomorrow
+   *
+   * Check tomorrow first so that if
+   * both flags are accidentally true,
+   * tomorrow wins.
+   */
+  if (input.tomorrowOnly) {
+    const range =
+      getLocalDayRange(1);
 
     timeMin =
-      start.toISOString();
+      range.timeMin;
 
     timeMax =
-      end.toISOString();
+      range.timeMax;
+  }
+
+  /**
+   * Today
+   */
+  else if (input.todayOnly) {
+    const range =
+      getLocalDayRange(0);
+
+    timeMin =
+      range.timeMin;
+
+    timeMax =
+      range.timeMax;
+  }
+
+  /**
+   * Normal upcoming events
+   */
+  else {
+    timeMin =
+      new Date().toISOString();
   }
 
   const response =
     await calendar.events.list({
-      calendarId: "primary",
+      calendarId:
+        "primary",
 
       timeMin,
 
@@ -172,27 +293,209 @@ export async function listUpcomingMeetings(
         input.maxResults ??
         20,
 
-      singleEvents: true,
+      singleEvents:
+        true,
 
-      orderBy: "startTime",
+      orderBy:
+        "startTime",
     });
 
   return (
-    response.data.items ?? []
+    response.data.items ??
+    []
   ).map(formatEvent);
 }
 
 /**
- * Create event.
+ * ============================================================
+ * SEARCH CALENDAR EVENTS
+ * ============================================================
+ *
+ * This is the important function for historical data.
+ *
+ * It supports:
+ *
+ * - past 30 days
+ * - past 90 days
+ * - past year
+ * - past 10 years
+ * - last month
+ * - events between two dates
+ * - future date ranges
+ *
+ * Example:
+ *
+ * startIso = 2016-01-01T00:00:00.000Z
+ * endIso   = 2026-01-01T00:00:00.000Z
  */
+
+export async function searchCalendarEvents(
+  input: {
+    authUserId: string;
+
+    startIso: string;
+
+    endIso: string;
+
+    maxResults?: number;
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
+
+  /**
+   * Validate dates before sending
+   * the request to Google.
+   */
+  const startDate =
+    new Date(
+      input.startIso,
+    );
+
+  const endDate =
+    new Date(
+      input.endIso,
+    );
+
+  if (
+    Number.isNaN(
+      startDate.getTime(),
+    )
+  ) {
+    throw new Error(
+      "Invalid startIso date.",
+    );
+  }
+
+  if (
+    Number.isNaN(
+      endDate.getTime(),
+    )
+  ) {
+    throw new Error(
+      "Invalid endIso date.",
+    );
+  }
+
+  if (
+    startDate >= endDate
+  ) {
+    throw new Error(
+      "startIso must be before endIso.",
+    );
+  }
+
+  /**
+   * Google Calendar allows up to 2500
+   * results per API request.
+   */
+  const requestedMax =
+    Math.min(
+      Math.max(
+        input.maxResults ??
+          2500,
+        1,
+      ),
+      2500,
+    );
+
+  const events:
+    ReturnType<
+      typeof formatEvent
+    >[] = [];
+
+  let pageToken:
+    | string
+    | undefined;
+
+  do {
+    const remaining =
+      requestedMax -
+      events.length;
+
+    if (remaining <= 0) {
+      break;
+    }
+
+    const response =
+      await calendar.events.list({
+        calendarId:
+          "primary",
+
+        timeMin:
+          startDate.toISOString(),
+
+        timeMax:
+          endDate.toISOString(),
+
+        maxResults:
+          Math.min(
+            remaining,
+            2500,
+          ),
+
+        pageToken,
+
+        singleEvents:
+          true,
+
+        orderBy:
+          "startTime",
+      });
+
+    const pageEvents =
+      response.data.items ??
+      [];
+
+    events.push(
+      ...pageEvents.map(
+        formatEvent,
+      ),
+    );
+
+    pageToken =
+      response.data
+        .nextPageToken ??
+      undefined;
+
+  } while (
+    pageToken &&
+    events.length <
+      requestedMax
+  );
+
+  /**
+   * Make absolutely sure we never
+   * return more than requested.
+   */
+  return events.slice(
+    0,
+    requestedMax,
+  );
+}
+
+/**
+ * ============================================================
+ * CREATE EVENT
+ * ============================================================
+ */
+
 export async function createMeeting(
   input: {
     authUserId: string;
+
     title: string;
+
     startIso: string;
+
     endIso: string;
+
     attendeeEmails?: string[];
+
     description?: string;
+
     addGoogleMeet?: boolean;
   },
 ) {
@@ -202,16 +505,28 @@ export async function createMeeting(
     );
 
   const withMeet =
-    input.addGoogleMeet !== false;
+    input.addGoogleMeet !==
+    false;
+
+  const attendeeEmails =
+    input.attendeeEmails ??
+    [];
 
   const response =
     await calendar.events.insert({
-      calendarId: "primary",
+      calendarId:
+        "primary",
 
-      sendUpdates: "all",
+      sendUpdates:
+        attendeeEmails.length >
+        0
+          ? "all"
+          : "none",
 
       conferenceDataVersion:
-        withMeet ? 1 : undefined,
+        withMeet
+          ? 1
+          : undefined,
 
       requestBody: {
         summary:
@@ -231,10 +546,7 @@ export async function createMeeting(
         },
 
         attendees:
-          (
-            input.attendeeEmails ??
-            []
-          ).map(
+          attendeeEmails.map(
             (email) => ({
               email,
             }),
@@ -264,10 +576,8 @@ export async function createMeeting(
     ),
 
     inviteEmailsSent:
-      (
-        input.attendeeEmails ??
-        []
-      ).length > 0,
+      attendeeEmails.length >
+      0,
 
     googleMeetAdded:
       withMeet,
@@ -275,11 +585,15 @@ export async function createMeeting(
 }
 
 /**
- * Cancel event.
+ * ============================================================
+ * CANCEL EVENT
+ * ============================================================
  */
+
 export async function cancelMeeting(
   input: {
     authUserId: string;
+
     eventId: string;
   },
 ) {
@@ -289,16 +603,19 @@ export async function cancelMeeting(
     );
 
   await calendar.events.delete({
-    calendarId: "primary",
+    calendarId:
+      "primary",
 
     eventId:
       input.eventId,
 
-    sendUpdates: "all",
+    sendUpdates:
+      "all",
   });
 
   return {
-    cancelled: true,
+    cancelled:
+      true,
 
     eventId:
       input.eventId,
@@ -306,13 +623,19 @@ export async function cancelMeeting(
 }
 
 /**
- * Reschedule event.
+ * ============================================================
+ * RESCHEDULE EVENT
+ * ============================================================
  */
+
 export async function rescheduleMeeting(
   input: {
     authUserId: string;
+
     eventId: string;
+
     startIso: string;
+
     endIso: string;
   },
 ) {
@@ -323,12 +646,14 @@ export async function rescheduleMeeting(
 
   const response =
     await calendar.events.patch({
-      calendarId: "primary",
+      calendarId:
+        "primary",
 
       eventId:
         input.eventId,
 
-      sendUpdates: "all",
+      sendUpdates:
+        "all",
 
       requestBody: {
         start: {
@@ -349,14 +674,22 @@ export async function rescheduleMeeting(
 }
 
 /**
- * Update agenda.
+ * ============================================================
+ * UPDATE MEETING AGENDA
+ * ============================================================
  */
+
 export async function updateMeetingAgenda(
   input: {
     authUserId: string;
+
     eventId: string;
+
     agenda: string;
-    mode?: "append" | "replace";
+
+    mode?:
+      | "append"
+      | "replace";
   },
 ) {
   const calendar =
@@ -366,7 +699,8 @@ export async function updateMeetingAgenda(
 
   const existing =
     await calendar.events.get({
-      calendarId: "primary",
+      calendarId:
+        "primary",
 
       eventId:
         input.eventId,
@@ -380,7 +714,8 @@ export async function updateMeetingAgenda(
     input.agenda.trim();
 
   const mode =
-    input.mode ?? "append";
+    input.mode ??
+    "append";
 
   const updatedDescription =
     mode === "replace"
@@ -391,7 +726,8 @@ export async function updateMeetingAgenda(
 
   const response =
     await calendar.events.patch({
-      calendarId: "primary",
+      calendarId:
+        "primary",
 
       eventId:
         input.eventId,
@@ -408,12 +744,17 @@ export async function updateMeetingAgenda(
 }
 
 /**
- * Check busy.
+ * ============================================================
+ * CHECK CALENDAR BUSY
+ * ============================================================
  */
+
 export async function checkCalendarBusy(
   input: {
     authUserId: string;
+
     startIso: string;
+
     endIso: string;
   },
 ) {
@@ -433,7 +774,8 @@ export async function checkCalendarBusy(
 
         items: [
           {
-            id: "primary",
+            id:
+              "primary",
           },
         ],
       },
@@ -443,7 +785,8 @@ export async function checkCalendarBusy(
     response.data
       ?.calendars
       ?.primary
-      ?.busy ?? [];
+      ?.busy ??
+    [];
 
   return {
     busy:
