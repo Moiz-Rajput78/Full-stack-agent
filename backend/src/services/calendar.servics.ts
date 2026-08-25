@@ -1,25 +1,37 @@
-import {google} from 'googleapis'
-import {randomUUID} from 'node:crypto'
-import { getCalendarAccessToken } from './token.service.js';
-import Response from 'express';
-import { INPUT_PREVIEW_MAX_LENGTH } from '@mastra/core/storage';
-import { response } from 'express';
+import { google } from "googleapis";
+import { randomUUID } from "node:crypto";
 
-function calendarClient(accesToken : string){
-    const auth = new google.auth.OAuth2()
+import {
+  getCalendarAccessToken,
+} from "./token.service.js";
 
-    auth.setCredentials({
-        access_token: accesToken
-    })
-     return google.calendar({
-        version: 'v3',
-        auth
-     })
+function calendarClient(
+  accessToken: string,
+) {
+  const auth =
+    new google.auth.OAuth2();
+
+  auth.setCredentials({
+    access_token: accessToken,
+  });
+
+  return google.calendar({
+    version: "v3",
+    auth,
+  });
 }
 
-async function calendarForUser(authUserId: string){
-    const accessToken = await getCalendarAccessToken(authUserId)
-    return calendarClient(accessToken)
+async function calendarForUser(
+  authUserId: string,
+) {
+  const accessToken =
+    await getCalendarAccessToken(
+      authUserId,
+    );
+
+  return calendarClient(
+    accessToken,
+  );
 }
 
 function formatEvent(event: {
@@ -27,184 +39,424 @@ function formatEvent(event: {
   summary?: string | null;
   description?: string | null;
   location?: string | null;
-  start?: { dateTime?: string | null; date?: string | null } | null;
-  end?: { dateTime?: string | null; date?: string | null } | null;
+
+  start?: {
+    dateTime?: string | null;
+    date?: string | null;
+  } | null;
+
+  end?: {
+    dateTime?: string | null;
+    date?: string | null;
+  } | null;
+
   htmlLink?: string | null;
   hangoutLink?: string | null;
+
   attendees?: Array<{
     email?: string | null;
     displayName?: string | null;
   }> | null;
 }) {
-      return {
-    id: event.id,
-    title: event.summary ?? "(no title)",
-    description: event.description?.trim() || null,
-    location: event.location?.trim() || null,
-    start: event.start?.dateTime ?? event.start?.date ?? null,
-    end: event.end?.dateTime ?? event.end?.date ?? null,
-    htmlLink: event.htmlLink ?? null,
-    meetLink: event.hangoutLink ?? null,
-    attendees: (event.attendees ?? [])
-      .map((person) => person.email || person.displayName)
-      .filter((value): value is string => Boolean(value)),
-  };
+  return {
+    id:
+      event.id ?? null,
 
+    title:
+      event.summary?.trim() ||
+      "(no title)",
+
+    description:
+      event.description?.trim() ||
+      null,
+
+    location:
+      event.location?.trim() ||
+      null,
+
+    start:
+      event.start?.dateTime ??
+      event.start?.date ??
+      null,
+
+    end:
+      event.end?.dateTime ??
+      event.end?.date ??
+      null,
+
+    htmlLink:
+      event.htmlLink ??
+      null,
+
+    meetLink:
+      event.hangoutLink ??
+      null,
+
+    attendees:
+      (event.attendees ?? [])
+        .map(
+          (person) =>
+            person.email ||
+            person.displayName,
+        )
+        .filter(
+          (
+            value,
+          ): value is string =>
+            Boolean(value),
+        ),
+  };
 }
 
-export async function listUpcomingMeetings(input:{
+/**
+ * List upcoming events.
+ */
+export async function listUpcomingMeetings(
+  input: {
     authUserId: string;
     maxResults?: number;
     todayOnly?: boolean;
-}) {
-    const calendar = await calendarForUser(input.authUserId);
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
 
-    let timeMin = new Date().toISOString();
+  const now = new Date();
 
-    let timeMax: string | undefined
+  let timeMin =
+    now.toISOString();
 
-    if(input.todayOnly){
-        const start = new Date();
-        start.setHours(0,0,0,0)
+  let timeMax:
+    | string
+    | undefined;
 
-        const end = new Date()
-        end.setHours(23,59,59,999)
+  if (input.todayOnly) {
+    const start =
+      new Date(now);
 
-        timeMin = start.toISOString()
-        timeMax = end.toISOString()
-        
-    }
-    const response = await calendar.events.list({
-        calendarId : 'primary',
-        timeMin,
-        timeMax,
-        maxResults: input.maxResults ?? 10,
-        singleEvents : true,
-        orderBy : 'startTime'
-    })
-    
-    return (response.data.items ?? []).map(formatEvent)
+    start.setHours(
+      0,
+      0,
+      0,
+      0,
+    );
 
+    const end =
+      new Date(now);
+
+    end.setHours(
+      23,
+      59,
+      59,
+      999,
+    );
+
+    timeMin =
+      start.toISOString();
+
+    timeMax =
+      end.toISOString();
+  }
+
+  const response =
+    await calendar.events.list({
+      calendarId: "primary",
+
+      timeMin,
+
+      timeMax,
+
+      maxResults:
+        input.maxResults ??
+        20,
+
+      singleEvents: true,
+
+      orderBy: "startTime",
+    });
+
+  return (
+    response.data.items ?? []
+  ).map(formatEvent);
 }
 
-export async function createMeeting(input: {
+/**
+ * Create event.
+ */
+export async function createMeeting(
+  input: {
     authUserId: string;
-  title: string;
-  startIso: string;
-  endIso: string;
-  attendeeEmails?: string[];
-  description?: string;
-  addGoogleMeet?: boolean;
+    title: string;
+    startIso: string;
+    endIso: string;
+    attendeeEmails?: string[];
+    description?: string;
+    addGoogleMeet?: boolean;
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
 
-}){
-    const calendar = await calendarForUser(input.authUserId)
+  const withMeet =
+    input.addGoogleMeet !== false;
 
-    const withMeet = input.addGoogleMeet !== false
+  const response =
+    await calendar.events.insert({
+      calendarId: "primary",
 
-    const response = await calendar.events.insert({
-        calendarId : 'primary',
-        sendUpdates : 'all',
-        conferenceDataVersion : withMeet ? 1: undefined,
-        requestBody :{
-            summary : input.title,
-            description : input.description,
-            start:{
-                dateTime : input.startIso
-            },
-            end:{
-                dateTime : input.endIso
-            },
-            attendees : (input.attendeeEmails ?? []).map(email=> ({email})),
-            conferenceData : withMeet ? 
-            {
-                createRequest :{
-                    requestId : randomUUID(),
-                    conferenceSolutionKey : {
-                        type : 'hangoutsMeet'
-                    }
-                }
-            }
+      sendUpdates: "all",
 
-            : undefined
-        }
-    })
+      conferenceDataVersion:
+        withMeet ? 1 : undefined,
 
-    return {
-        ...formatEvent(response.data),
-        inviteEmailsSent :  (input.attendeeEmails ?? []).length > 0,
-        googleMeetAdded : withMeet
-    }
+      requestBody: {
+        summary:
+          input.title,
+
+        description:
+          input.description,
+
+        start: {
+          dateTime:
+            input.startIso,
+        },
+
+        end: {
+          dateTime:
+            input.endIso,
+        },
+
+        attendees:
+          (
+            input.attendeeEmails ??
+            []
+          ).map(
+            (email) => ({
+              email,
+            }),
+          ),
+
+        conferenceData:
+          withMeet
+            ? {
+                createRequest: {
+                  requestId:
+                    randomUUID(),
+
+                  conferenceSolutionKey:
+                    {
+                      type:
+                        "hangoutsMeet",
+                    },
+                },
+              }
+            : undefined,
+      },
+    });
+
+  return {
+    ...formatEvent(
+      response.data,
+    ),
+
+    inviteEmailsSent:
+      (
+        input.attendeeEmails ??
+        []
+      ).length > 0,
+
+    googleMeetAdded:
+      withMeet,
+  };
 }
 
-export async function cancelMeeting(input :{
+/**
+ * Cancel event.
+ */
+export async function cancelMeeting(
+  input: {
     authUserId: string;
-    eventId: string
-}) {
-    const calendar = await calendarForUser(input.authUserId)
+    eventId: string;
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
 
-    await calendar.events.delete({
-        calendarId :'primary',
-        eventId : input.eventId,
-        sendUpdates : 'all'
+  await calendar.events.delete({
+    calendarId: "primary",
 
-    })
+    eventId:
+      input.eventId,
 
-    return {
-        cancelled : true,
-        eventId: input.eventId
-    }
+    sendUpdates: "all",
+  });
+
+  return {
+    cancelled: true,
+
+    eventId:
+      input.eventId,
+  };
 }
 
-
-export async function rescheduleMeeting(input :{
-    authUserId : string;
-    eventId : string;
-    startIso : string;
+/**
+ * Reschedule event.
+ */
+export async function rescheduleMeeting(
+  input: {
+    authUserId: string;
+    eventId: string;
+    startIso: string;
     endIso: string;
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
 
-}) {
-     const calendar = await calendarForUser(input.authUserId)
+  const response =
+    await calendar.events.patch({
+      calendarId: "primary",
 
-     const response = await calendar.events.patch({
-        calendarId: 'primary',
-        eventId : input.eventId,
-        sendUpdates : 'all',
-        requestBody : {
-            start :{
-                dateTime: input.startIso
-            },
-            end:{
-                dateTime : input.endIso,
-            },
-        }
-    })
+      eventId:
+        input.eventId,
 
-    return formatEvent(response.data);
+      sendUpdates: "all",
+
+      requestBody: {
+        start: {
+          dateTime:
+            input.startIso,
+        },
+
+        end: {
+          dateTime:
+            input.endIso,
+        },
+      },
+    });
+
+  return formatEvent(
+    response.data,
+  );
 }
 
-export async function checkCalendarBusy(input: {
-    authUserId : string;
-    startIso : string;
+/**
+ * Update agenda.
+ */
+export async function updateMeetingAgenda(
+  input: {
+    authUserId: string;
+    eventId: string;
+    agenda: string;
+    mode?: "append" | "replace";
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
+
+  const existing =
+    await calendar.events.get({
+      calendarId: "primary",
+
+      eventId:
+        input.eventId,
+    });
+
+  const existingDescription =
+    existing.data.description?.trim() ??
+    "";
+
+  const newAgenda =
+    input.agenda.trim();
+
+  const mode =
+    input.mode ?? "append";
+
+  const updatedDescription =
+    mode === "replace"
+      ? newAgenda
+      : existingDescription
+        ? `${existingDescription}\n\n${newAgenda}`
+        : newAgenda;
+
+  const response =
+    await calendar.events.patch({
+      calendarId: "primary",
+
+      eventId:
+        input.eventId,
+
+      requestBody: {
+        description:
+          updatedDescription,
+      },
+    });
+
+  return formatEvent(
+    response.data,
+  );
+}
+
+/**
+ * Check busy.
+ */
+export async function checkCalendarBusy(
+  input: {
+    authUserId: string;
+    startIso: string;
     endIso: string;
-}) {
-    const calendar = await calendarForUser(input.authUserId)
+  },
+) {
+  const calendar =
+    await calendarForUser(
+      input.authUserId,
+    );
 
-    const response = await calendar.freebusy.query({
-        requestBody : {
-            timeMin : input.startIso,
-            timeMax : input.endIso,
-            items : [{
-                id : 'primary'
-            }]
-        }
-     })
+  const response =
+    await calendar.freebusy.query({
+      requestBody: {
+        timeMin:
+          input.startIso,
 
-     const busy = response.data?.calendars?.primary?.busy ?? []
+        timeMax:
+          input.endIso,
 
-     return {
-        busy : busy.map(item=>({
-            start : item.start ?? null,
-            end : item.end ?? null, 
-        }))
-     }
+        items: [
+          {
+            id: "primary",
+          },
+        ],
+      },
+    });
+
+  const busy =
+    response.data
+      ?.calendars
+      ?.primary
+      ?.busy ?? [];
+
+  return {
+    busy:
+      busy.map(
+        (item) => ({
+          start:
+            item.start ??
+            null,
+
+          end:
+            item.end ??
+            null,
+        }),
+      ),
+  };
 }

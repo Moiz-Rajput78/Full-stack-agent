@@ -4,7 +4,7 @@ import express from "express";
 import { getPool } from "./db/pool.js";
 import { connectionRouter } from "./routes/connection.routes.js";
 import { agentRoutes } from "./routes/agent.routes.js";
-
+import { debugRouter } from "./routes/debug.routes.js";
 const app = express();
 const port = Number(process.env.PORT) || 4000;
 const appOrigin = process.env.APP_URL ?? "http://localhost:3000";
@@ -17,6 +17,7 @@ app.use(
 );
 
 app.use(express.json());
+app.use("/api/debug", debugRouter);
 
 app.get("/health", async (_req, res) => {
   try {

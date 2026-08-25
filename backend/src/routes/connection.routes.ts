@@ -1,79 +1,289 @@
-import { Router } from 'express'
-import { requireSession } from '../middleware/requireSession.js'
+import { Router, type Request } from "express";
+import { requireSession } from "../middleware/requireSession.js";
 
 import {
-    getCalendarConnection,
-    createCalendarConnectUrl,
-    refreshCalendarConnection
-} from '../services/connection.service.js'
-export const connectionRouter = Router()
+  refreshCalendarStatus,
+  getCalendarConnection,
+} from "../services/connection.service.js";
 
-connectionRouter.use(requireSession);
+import {
+  createGoogleAuthorizationUrl,
+  exchangeGoogleCode,
+} from "../services/google-oauth.service.js";
 
-connectionRouter.get("/", async (req, res) => {
+import {
+  createOAuthState,
+  verifyOAuthState,
+} from "../services/oauth-state.service.js";
+
+import {
+  upsertCalendarConnection,
+} from "../repositories/connection.repository.js";
+
+export const connectionRouter = Router();
+
+type AuthenticatedRequest = Request & {
+  auth: {
+    userId: string;
+    authUserId: string;
+  };
+};
+
+/**
+ * ============================================================
+ * GOOGLE OAUTH CALLBACK
+ * ============================================================
+ *
+ * IMPORTANT:
+ * This route must be BEFORE requireSession.
+ *
+ * Google redirects here without the Descope
+ * Authorization header.
+ *
+ * GET /api/connections/google/callback
+ */
+connectionRouter.get(
+  "/google/callback",
+  async (req, res) => {
     try {
-        const connection = await getCalendarConnection(req.auth!.userId)
+      const code =
+        typeof req.query.code === "string"
+          ? req.query.code
+          : null;
 
-        res.json({ connection })
+      const state =
+        typeof req.query.state === "string"
+          ? req.query.state
+          : null;
 
+      if (!code) {
+        return res.status(400).send(
+          "Missing Google OAuth authorization code.",
+        );
+      }
+
+      if (!state) {
+        return res.status(400).send(
+          "Missing OAuth state.",
+        );
+      }
+
+      /**
+       * Verify that this OAuth request was
+       * started by one of our authenticated users.
+       */
+      const { userId } =
+        verifyOAuthState(state);
+
+      /**
+       * Exchange Google's authorization code
+       * for access + refresh tokens.
+       */
+      const tokens =
+        await exchangeGoogleCode(code);
+
+      if (!tokens.refresh_token) {
+        throw new Error(
+          "Google did not return a refresh token. Please try connecting again.",
+        );
+      }
+
+      const tokenExpiry =
+        tokens.expiry_date
+          ? new Date(tokens.expiry_date)
+          : null;
+
+      /**
+       * Save the Google tokens against the
+       * authenticated application user.
+       */
+      await upsertCalendarConnection({
+        userId,
+
+        status: "connected",
+
+        accessToken:
+          tokens.access_token ?? null,
+
+        refreshToken:
+          tokens.refresh_token,
+
+        expiresAt:
+          tokenExpiry,
+
+        scope:
+          tokens.scope ?? null,
+      });
+
+      const frontendUrl =
+        process.env.FRONTEND_URL ??
+        "http://localhost:3000";
+
+      console.log(
+        `[Google OAuth] Calendar connected for user ${userId}`,
+      );
+
+      return res.redirect(
+        `${frontendUrl}/dashboard?calendar=connected`,
+      );
     } catch (error) {
-        console.error("Could not load Connections:", error)
+      console.error(
+        "[Google OAuth] Callback failed:",
+        error,
+      );
 
-        return res.status(500).json({
-            error: "Could not load Connections.",
-        })
+      const frontendUrl =
+        process.env.FRONTEND_URL ??
+        "http://localhost:3000";
+
+      return res.redirect(
+        `${frontendUrl}/dashboard?calendar=error`,
+      );
     }
-})
+  },
+);
 
-connectionRouter.post("/connect", async (req, res) => {
+/**
+ * ============================================================
+ * AUTHENTICATED CONNECTION ROUTES
+ * ============================================================
+ *
+ * Everything below this point requires a valid
+ * Descope session.
+ */
+connectionRouter.use(
+  requireSession,
+);
+
+/**
+ * GET /api/connections
+ *
+ * Return the current calendar connection
+ * for the authenticated user.
+ */
+connectionRouter.get(
+  "/",
+  async (req, res) => {
     try {
-        const refreshToken =
-            typeof req.body?.refreshToken === 'string'
-                ? req.body.refreshToken
-                : ""
+      const connection =
+        await getCalendarConnection({
+          userId:
+            (
+              req as AuthenticatedRequest
+            ).auth.userId,
+        });
 
-        if (!refreshToken) {
-            return res.status(400).json({
-                error: "Refresh Token Required"
-            })
-        }
-
-        const redirectUrl =
-            typeof req.body?.redirectUrl === 'string'
-                ? req.body.redirectUrl
-                : `${process.env.APP_URL ?? "http://localhost:3000"}/dashboard`
-
-        const result = await createCalendarConnectUrl({
-            userId: req.auth!.userId,
-            refreshToken,
-            redirectUrl
-        })
-
-        res.json(result)
-
+      return res.json({
+        connection,
+      });
     } catch (error) {
-        console.error("Could not start Connections:", error)
+      console.error(
+        "Failed to get calendar connection:",
+        error,
+      );
 
-        res.status(500).json({
-            error: "Could not start Connections."
-        })
+      return res.status(500).json({
+        error:
+          "Failed to get calendar connection.",
+      });
     }
-})
+  },
+);
 
-connectionRouter.post("/refresh-status", async (req, res) => {
+/**
+ * POST /api/connections/connect
+ *
+ * Start Google Calendar OAuth.
+ */
+connectionRouter.post(
+  "/connect",
+  async (req, res) => {
     try {
-        const connection = await refreshCalendarConnection({
-            userId: req.auth!.userId,
-            authUserId: req.auth!.authUserId
-        })
+      const userId =
+        (
+          req as AuthenticatedRequest
+        ).auth.userId;
 
-        res.json({ connection })
+      /**
+       * Create a short-lived signed state
+       * containing our application user ID.
+       */
+      const state =
+        createOAuthState(userId);
 
+      /**
+       * Generate the Google authorization URL.
+       */
+      const url =
+        createGoogleAuthorizationUrl(
+          state,
+        );
+
+      /**
+       * Mark the connection as pending
+       * while the user is on Google's page.
+       */
+      await upsertCalendarConnection({
+        userId,
+        status: "pending",
+      });
+
+      console.log(
+        `[Google OAuth] Starting calendar connection for user ${userId}`,
+      );
+
+      return res.json({
+        url,
+      });
     } catch (error) {
-        console.error("Failed to refresh the Status:", error)
+      console.error(
+        "Could not start Google Calendar OAuth:",
+        error,
+      );
 
-        res.status(500).json({
-            error: "Failed to refresh the Status."
-        })
+      return res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not start Google Calendar OAuth.",
+      });
     }
-})
+  },
+);
+
+/**
+ * POST /api/connections/refresh-status
+ */
+connectionRouter.post(
+  "/refresh-status",
+  async (req, res) => {
+    try {
+      const connection =
+        await refreshCalendarStatus({
+          userId:
+            (
+              req as AuthenticatedRequest
+            ).auth.userId,
+
+          authUserId:
+            (
+              req as AuthenticatedRequest
+            ).auth.authUserId,
+        });
+
+      return res.json({
+        connection,
+      });
+    } catch (error) {
+      console.error(
+        "Failed to refresh the status:",
+        error,
+      );
+
+      return res.status(500).json({
+        error:
+          "Failed to refresh the status.",
+      });
+    }
+  },
+);
