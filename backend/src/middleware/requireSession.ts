@@ -7,7 +7,7 @@ import type {
 import { descopeClient } from "../config/descope.js";
 import { ensureUser } from "../repositories/user.repository.js";
 
-type AuthenticatedRequest = Request & {
+export type AuthenticatedRequest = Request & {
   auth: {
     authUserId: string;
     email?: string;

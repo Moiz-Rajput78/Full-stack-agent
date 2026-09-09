@@ -22,7 +22,7 @@ import {
 
 export const connectionRouter = Router();
 
-type AuthenticatedRequest = Request & {
+export type AuthenticatedRequest = Request & {
   auth: {
     userId: string;
     authUserId: string;
