@@ -38,7 +38,7 @@
     "/threads",
     async (req, res) => {
       const authReq =
-        req as AuthenticatedRequest;
+        req as unknown as AuthenticatedRequest;
 
       try {
         const threads =
@@ -74,7 +74,7 @@
     "/threads/:threadId",
     async (req, res) => {
       const authReq =
-        req as AuthenticatedRequest;
+        req as unknown as AuthenticatedRequest;
 
       const parsed =
         threadIdSchema.safeParse(
@@ -132,7 +132,7 @@
     "/threads/:threadId",
     async (req, res) => {
       const authReq =
-        req as AuthenticatedRequest;
+        req as unknown as AuthenticatedRequest;
 
       const parsed =
         threadIdSchema.safeParse(
@@ -188,7 +188,7 @@
     "/chat",
     async (req, res) => {
       const authReq =
-        req as AuthenticatedRequest;
+        req as unknown as AuthenticatedRequest;
 
       const parsed =
         chatSchema.safeParse(
